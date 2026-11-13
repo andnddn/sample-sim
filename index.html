@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>信号采样‑重建‑频谱分析</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+*{box-sizing:border-box;font-family:"Microsoft Yahei",sans-serif;}
+body{max-width:1200px;margin:24px auto;padding:0 16px;}
+.panel{background:#f4f7fb;padding:18px;border-radius:10px;margin-bottom:20px;}
+.row{display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin:12px 0;}
+label{width:150px;}
+input{padding:7px 10px;font-size:15px;width:280px;}
+button{padding:8px 20px;background:#2563eb;color:white;border:none;border-radius:5px;font-size:15px;cursor:pointer;}
+button:hover{background:#1d4ed8;}
+.chart-item{height:220px;margin:22px 0;}
+.info{font-size:14px;color:#444;margin-top:8px;}
+</style>
+</head>
+<body>
+<h2>信号采样、重建与频谱演示工具</h2>
+<div class="panel">
+  <div class="row">
+    <label>原始信号 x(t)= </label>
+    <input id="sigExpr" value="Math.cos(2*Math.PI*2*t)+0.4*Math.cos(2*Math.PI*5*t)" placeholder="t为时间，使用JS语法">
+  </div>
+  <div class="row">
+    <label>观测时长 tMax (s):</label>
+    <input id="tMax" value="2">
+  </div>
+  <div class="row">
+    <label>采样频率 fs (Hz):</label>
+    <input id="fsInput" value="15">
+  </div>
+  <div class="row">
+    <label>重建低通截止 fc (Hz):</label>
+    <input id="fcInput" value="8">
+  </div>
+  <div class="row">
+    <div></div>
+    <button onclick="runAll()">执行采样、重建、频谱计算</button>
+  </div>
+  <div class="info">
+    示例：Math.cos(2*Math.PI*3*t)；低于奈奎斯特频率可观察混叠与时域、频谱畸变；π写Math.PI
+  </div>
+</div>
+
+<h4>1.时域波形</h4>
+<div class="chart-item"><canvas id="c_origin"></canvas></div>
+<div class="chart-item"><canvas id="c_sample"></canvas></div>
+<div class="chart-item"><canvas id="c_rebuild"></canvas></div>
+
+<h4>2.频谱</h4>
+<div class="chart-item"><canvas id="c_fft_origin"></canvas></div>
+<div class="chart-item"><canvas id="c_fft_rebuild"></canvas></div>
+
+<script>
+let chOrigin,chSample,chRebuild,chFftOrig,chFftReb;
+
+// 计算信号表达式
+function calcSig(expr,t){
+  try{ return eval(expr); }catch{return 0;}
+}
+
+// sinc理想插值重建
+function sincInterpolate(tSamples, xSamples, t, Ts){
+  let sum=0;
+  for(let i=0;i<tSamples.length;i++){
+    const tau = tSamples[i];
+    const arg = (t - tau)/Ts;
+    const sv = Math.abs(arg)<1e-8 ? 1 : Math.sin(Math.PI*arg)/(Math.PI*arg);
+    sum += xSamples[i]*sv;
+  }
+  return sum;
+}
+
+// FFT简易实现（幅值谱）
+function fftReal(xArr,fs){
+  const N = xArr.length;
+  const half = Math.floor(N/2);
+  let amp = [];
+  let freqAxis = [];
+  for(let k=0;k<half;k++){
+    let re=0,im=0;
+    for(let n=0;n<N;n++){
+      const ang = -2*Math.PI*k*n/N;
+      re += xArr[n]*Math.cos(ang);
+      im += xArr[n]*Math.sin(ang);
+    }
+    const mag = Math.sqrt(re*re+im*im)/N*2;
+    amp.push(mag);
+    freqAxis.push(k*fs/N);
+  }
+  return {freq:freqAxis,mag:amp};
+}
+
+function runAll(){
+  const expr = document.getElementById("sigExpr").value;
+  const tMax = parseFloat(document.getElementById("tMax").value);
+  const fs = parseFloat(document.getElementById("fsInput").value);
+  const fc = parseFloat(document.getElementById("fcInput").value);
+
+  const dtFine = 0.001;
+  // 1.原始高密度模拟连续信号
+  let tFine=[], xFine=[];
+  for(let t=0;t<=tMax;t+=dtFine){
+    tFine.push(t);
+    xFine.push(calcSig(expr,t));
+  }
+
+  // 2.采样点
+  const Ts = 1/fs;
+  let tSample=[],xSample=[];
+  for(let t=0;t<=tMax;t+=Ts){
+    tSample.push(t);
+    xSample.push(calcSig(expr,t));
+  }
+
+  //3.sinc重建
+  let xRebuild=[];
+  for(let ti of tFine){
+    xRebuild.push(sincInterpolate(tSample,xSample,ti,Ts));
+  }
+
+  // 原始信号频谱：对原始信号做降采样，统一分析采样率
+  const fftOrigData = fftReal(xFine, 1/dtFine);
+  // 重建信号频谱
+  const fftRebData = fftReal(xRebuild,1/dtFine);
+
+  // 绘图时域
+  drawLine("c_origin",chOrigin,"原始连续信号 x(t)",tFine,xFine);
+  drawScatter("c_sample",chSample,"采样离散信号（采样点）",tSample,xSample);
+  drawLine("c_rebuild",chRebuild,"Sinc插值重建信号",tFine,xRebuild);
+
+  // 绘图频谱
+  drawLine("c_fft_origin",chFftOrig,"原始信号 幅值频谱",fftOrigData.freq,fftOrigData.mag,"频率(Hz)");
+  drawLine("c_fft_rebuild",chFftReb,"重建后信号 幅值频谱",fftRebData.freq,fftRebData.mag,"频率(Hz)");
+}
+
+function drawLine(canvasId,chartObj,title,x,y,xlabel="时间 t(s)"){
+  const ctx = document.getElementById(canvasId).getContext("2d");
+  if(chartObj) chartObj.destroy();
+  chartObj = new Chart(ctx,{
+    type:"line",
+    data:{labels:x,datasets:[{label:title,data:y,borderColor:"#2563eb",pointRadius:0,borderWidth:2}]},
+    options:{
+      responsive:true,maintainAspectRatio:false,
+      scales:{x:{title:{display:true,text:xlabel}},y:{title:{display:true,text:"幅值"}}}
+    }
+  });
+  if(canvasId==="c_origin") chOrigin=chartObj;
+  if(canvasId==="c_rebuild") chRebuild=chartObj;
+  if(canvasId==="c_fft_origin") chFftOrig=chartObj;
+  if(canvasId==="c_fft_rebuild") chFftReb=chartObj;
+}
+
+function drawScatter(canvasId,chartObj,title,x,y){
+  const ctx = document.getElementById(canvasId).getContext("2d");
+  if(chartObj) chartObj.destroy();
+  chartObj = new Chart(ctx,{
+    type:"scatter",
+    data:{datasets:[{
+      label:title,
+      data:x.map((v,i)=>({x:v,y:y[i]})),
+      backgroundColor:"#dc2626",pointRadius:6
+    }]},
+    options:{
+      responsive:true,maintainAspectRatio:false,
+      scales:{x:{title:{display:true,text:"时间 t(s)"}},y:{title:{display:true,text:"幅值"}}}
+    }
+  });
+  chSample = chartObj;
+}
+
+window.onload = runAll;
+</script>
+</body>
+</html>
